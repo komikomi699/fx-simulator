@@ -276,7 +276,8 @@ with col_logic:
         sl_val = current_price + stop_pips * pip_value
         st.info(f"🔴 **SHORT (売り) エントリー**\n- 売値: {current_price:{fmt}}\n- 損切り(SL): {sl_val:{fmt}}\n- 利確(TP): {recent_low:{fmt}}")
     else:
-        st.text("ノーポジション (条件合致待ち)")
+        planned_price = recent_5m_high if "Uptrend" in htf_trend else recent_5m_low
+        st.text(f"ノーポジション (条件合致待ち)\nエントリー予定: {planned_price:{fmt}} 付近")
 
 with col_chart:
     st.subheader(f"📈 5分足チャート ({pair_symbol.replace('=X', '')})")
@@ -301,13 +302,13 @@ with col_chart:
     ))
 
     # --------------------------------------------------------------------------
-    # シグナル矢印プロット & エントリー・損切り・利確ライン描画
+    # シグナル矢印・エントリー位置・損切り・利確ライン描画
     # --------------------------------------------------------------------------
     latest_time = df[time_col].iloc[-1]
     price_fmt = ".3f" if "JPY" in pair_symbol else ".5f"
 
     if signal == "BUY":
-        # 1. BUY シグナルアイコン（チャート上の最新足の下にプロット）
+        # 1. BUY シグナルアイコン
         fig.add_trace(go.Scatter(
             x=[latest_time],
             y=[df["Low"].iloc[-1] - 3 * pip_value],
@@ -319,9 +320,9 @@ with col_chart:
             name="BUY Signal"
         ))
 
-        # 2. エントリー価格ライン
+        # 2. ポジション エントリーライン (現在価格で約定)
         fig.add_hline(
-            y=current_price, line_dash="solid", line_color="#29B6F6", line_width=1.5,
+            y=current_price, line_dash="solid", line_color="#00B0FF", line_width=2,
             annotation_text=f"ENTRY ({current_price:{price_fmt}})", annotation_position="top right"
         )
 
@@ -338,7 +339,7 @@ with col_chart:
             annotation_text=f"SL ({sl_price:{price_fmt}})", annotation_position="bottom right"
         )
 
-        # 5. 建値トレールストップライン
+        # 5. 建値トレールライン
         if enable_trail:
             trail_price = current_price + 1.0 * pip_value
             fig.add_hline(
@@ -347,7 +348,7 @@ with col_chart:
             )
 
     elif signal == "SELL":
-        # 1. SELL シグナルアイコン（チャート上の最新足の上にプロット）
+        # 1. SELL シグナルアイコン
         fig.add_trace(go.Scatter(
             x=[latest_time],
             y=[df["High"].iloc[-1] + 3 * pip_value],
@@ -359,9 +360,9 @@ with col_chart:
             name="SELL Signal"
         ))
 
-        # 2. エントリー価格ライン
+        # 2. ポジション エントリーライン (現在価格で約定)
         fig.add_hline(
-            y=current_price, line_dash="solid", line_color="#29B6F6", line_width=1.5,
+            y=current_price, line_dash="solid", line_color="#00B0FF", line_width=2,
             annotation_text=f"ENTRY ({current_price:{price_fmt}})", annotation_position="top right"
         )
 
@@ -378,12 +379,25 @@ with col_chart:
             annotation_text=f"SL ({sl_price:{price_fmt}})", annotation_position="bottom right"
         )
 
-        # 5. 建値トレールストップライン
+        # 5. 建値トレールライン
         if enable_trail:
             trail_price = current_price - 1.0 * pip_value
             fig.add_hline(
                 y=trail_price, line_dash="dot", line_color="#00E5FF", line_width=1,
                 annotation_text="Trailing SL", annotation_position="bottom right"
+            )
+
+    else:
+        # エントリー未確定（待機中）の場合：エントリー予定（ブレイク目標値）ラインを描画
+        if "Uptrend" in htf_trend:
+            fig.add_hline(
+                y=recent_5m_high, line_dash="dashdot", line_color="#FFD600", line_width=1.5,
+                annotation_text=f"PLANNED BUY ENTRY ({recent_5m_high:{price_fmt}})", annotation_position="top right"
+            )
+        elif "Downtrend" in htf_trend:
+            fig.add_hline(
+                y=recent_5m_low, line_dash="dashdot", line_color="#FFD600", line_width=1.5,
+                annotation_text=f"PLANNED SELL ENTRY ({recent_5m_low:{price_fmt}})", annotation_position="bottom right"
             )
 
     fig.update_layout(
