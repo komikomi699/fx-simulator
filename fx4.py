@@ -36,7 +36,6 @@ st.markdown("""
 # ------------------------------------------------------------------------------
 SETTINGS_FILE = "settings.json"
 
-# デフォルト設定値
 DEFAULT_SETTINGS = {
     "pair_symbol": "USDJPY=X",
     "htf_trend": "1H Uptrend (Buy Only)",
@@ -47,7 +46,6 @@ DEFAULT_SETTINGS = {
     "enable_trail": True
 }
 
-# 1. 保存済みファイルがあれば読み込み
 if os.path.exists(SETTINGS_FILE):
     try:
         with open(SETTINGS_FILE, "r") as f:
@@ -56,7 +54,6 @@ if os.path.exists(SETTINGS_FILE):
     except Exception:
         pass
 
-# 2. URLクエリパラメータから設定を取得（最優先）
 query_params = st.query_params
 
 pair_options_keys = ["USDJPY=X", "EURUSD=X", "GBPJPY=X", "EURJPY=X"]
@@ -120,7 +117,6 @@ st.sidebar.header("🤖 自動売買 (Auto-Trader) 設定")
 auto_trade = st.sidebar.toggle("自動売買エンジン (Auto-Trading)", value=init_auto)
 enable_trail = st.sidebar.toggle("建値トレールストップ機能", value=init_trail)
 
-# 現在の入力パラメータをURLクエリへ同期更新
 st.query_params.update({
     "pair": pair_symbol,
     "htf": htf_trend,
@@ -272,12 +268,13 @@ with col_logic:
         
     st.markdown("---")
     st.write("**現在のポジション状態**")
+    fmt = ".3f" if "JPY" in pair_symbol else ".5f"
     if signal == "BUY" and auto_trade:
         sl_val = current_price - stop_pips * pip_value
-        st.info(f"🔵 **LONG (買い) エントリー**\n- 買値: {current_price:.3f}\n- 損切り(SL): {sl_val:.3f}\n- 利確(TP): {recent_high:.3f}")
+        st.info(f"🔵 **LONG (買い) エントリー**\n- 買値: {current_price:{fmt}}\n- 損切り(SL): {sl_val:{fmt}}\n- 利確(TP): {recent_high:{fmt}}")
     elif signal == "SELL" and auto_trade:
         sl_val = current_price + stop_pips * pip_value
-        st.info(f"🔴 **SHORT (売り) エントリー**\n- 売値: {current_price:.3f}\n- 損切り(SL): {sl_val:.3f}\n- 利確(TP): {recent_low:.3f}")
+        st.info(f"🔴 **SHORT (売り) エントリー**\n- 売値: {current_price:{fmt}}\n- 損切り(SL): {sl_val:{fmt}}\n- 利確(TP): {recent_low:{fmt}}")
     else:
         st.text("ノーポジション (条件合致待ち)")
 
@@ -288,6 +285,7 @@ with col_chart:
 
     fig = go.Figure()
 
+    # ローソク足
     fig.add_trace(go.Candlestick(
         x=df[time_col],
         open=df["Open"], high=df["High"],
@@ -295,23 +293,98 @@ with col_chart:
         name="Price"
     ))
 
+    # EMA20
     fig.add_trace(go.Scatter(
         x=df[time_col], y=df["EMA20"],
         line=dict(color="#2962FF", width=1.5),
         name="5M EMA(20)"
     ))
 
+    # --------------------------------------------------------------------------
+    # シグナル矢印プロット & エントリー・損切り・利確ライン描画
+    # --------------------------------------------------------------------------
+    latest_time = df[time_col].iloc[-1]
+    price_fmt = ".3f" if "JPY" in pair_symbol else ".5f"
+
     if signal == "BUY":
-        fig.add_hline(y=recent_high, line_dash="dash", line_color="#00E676", annotation_text="TP (Target High)")
-        fig.add_hline(y=current_price - stop_pips * pip_value, line_dash="dash", line_color="#FF5252", annotation_text="SL (Initial Stop)")
+        # 1. BUY シグナルアイコン（チャート上の最新足の下にプロット）
+        fig.add_trace(go.Scatter(
+            x=[latest_time],
+            y=[df["Low"].iloc[-1] - 3 * pip_value],
+            mode="markers+text",
+            marker=dict(symbol="triangle-up", size=16, color="#00E676"),
+            text=["<b>BUY ⚡</b>"],
+            textposition="bottom center",
+            textfont=dict(color="#00E676", size=13),
+            name="BUY Signal"
+        ))
+
+        # 2. エントリー価格ライン
+        fig.add_hline(
+            y=current_price, line_dash="solid", line_color="#29B6F6", line_width=1.5,
+            annotation_text=f"ENTRY ({current_price:{price_fmt}})", annotation_position="top right"
+        )
+
+        # 3. 利確 (TP) ライン
+        fig.add_hline(
+            y=recent_high, line_dash="dash", line_color="#00E676", line_width=1.5,
+            annotation_text=f"TP ({recent_high:{price_fmt}})", annotation_position="bottom right"
+        )
+
+        # 4. 損切り (SL) ライン
+        sl_price = current_price - stop_pips * pip_value
+        fig.add_hline(
+            y=sl_price, line_dash="dash", line_color="#FF5252", line_width=1.5,
+            annotation_text=f"SL ({sl_price:{price_fmt}})", annotation_position="bottom right"
+        )
+
+        # 5. 建値トレールストップライン
         if enable_trail:
-            fig.add_hline(y=current_price + 1.0 * pip_value, line_dash="dot", line_color="#00E5FF", annotation_text="Trailing SL (Breakeven +1pip)")
+            trail_price = current_price + 1.0 * pip_value
+            fig.add_hline(
+                y=trail_price, line_dash="dot", line_color="#00E5FF", line_width=1,
+                annotation_text="Trailing SL", annotation_position="top right"
+            )
 
     elif signal == "SELL":
-        fig.add_hline(y=recent_low, line_dash="dash", line_color="#00E676", annotation_text="TP (Target Low)")
-        fig.add_hline(y=current_price + stop_pips * pip_value, line_dash="dash", line_color="#FF5252", annotation_text="SL (Initial Stop)")
+        # 1. SELL シグナルアイコン（チャート上の最新足の上にプロット）
+        fig.add_trace(go.Scatter(
+            x=[latest_time],
+            y=[df["High"].iloc[-1] + 3 * pip_value],
+            mode="markers+text",
+            marker=dict(symbol="triangle-down", size=16, color="#FF5252"),
+            text=["<b>SELL ⚡</b>"],
+            textposition="top center",
+            textfont=dict(color="#FF5252", size=13),
+            name="SELL Signal"
+        ))
+
+        # 2. エントリー価格ライン
+        fig.add_hline(
+            y=current_price, line_dash="solid", line_color="#29B6F6", line_width=1.5,
+            annotation_text=f"ENTRY ({current_price:{price_fmt}})", annotation_position="top right"
+        )
+
+        # 3. 利確 (TP) ライン
+        fig.add_hline(
+            y=recent_low, line_dash="dash", line_color="#00E676", line_width=1.5,
+            annotation_text=f"TP ({recent_low:{price_fmt}})", annotation_position="bottom right"
+        )
+
+        # 4. 損切り (SL) ライン
+        sl_price = current_price + stop_pips * pip_value
+        fig.add_hline(
+            y=sl_price, line_dash="dash", line_color="#FF5252", line_width=1.5,
+            annotation_text=f"SL ({sl_price:{price_fmt}})", annotation_position="bottom right"
+        )
+
+        # 5. 建値トレールストップライン
         if enable_trail:
-            fig.add_hline(y=current_price - 1.0 * pip_value, line_dash="dot", line_color="#00E5FF", annotation_text="Trailing SL (Breakeven -1pip)")
+            trail_price = current_price - 1.0 * pip_value
+            fig.add_hline(
+                y=trail_price, line_dash="dot", line_color="#00E5FF", line_width=1,
+                annotation_text="Trailing SL", annotation_position="bottom right"
+            )
 
     fig.update_layout(
         height=520,
