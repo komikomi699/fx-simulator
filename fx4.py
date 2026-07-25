@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import yfinance as yf
 from datetime import datetime, timedelta
 import json
@@ -117,6 +118,17 @@ st.sidebar.header("🤖 自動売買 (Auto-Trader) 設定")
 auto_trade = st.sidebar.toggle("自動売買エンジン (Auto-Trading)", value=init_auto)
 enable_trail = st.sidebar.toggle("建値トレールストップ機能", value=init_trail)
 
+# ------------------------------------------------------------------------------
+# サイドバー：テクニカル分析表示切替（チェックボックス）
+# ------------------------------------------------------------------------------
+st.sidebar.markdown("---")
+st.sidebar.header("📊 チャート表示オプション")
+show_trendlines = st.sidebar.checkbox("自動トレンドライン", value=True)
+show_ema20 = st.sidebar.checkbox("5M EMA(20)", value=True)
+show_sma50 = st.sidebar.checkbox("5M SMA(50)", value=False)
+show_rsi = st.sidebar.checkbox("RSI (14) サブチャート", value=True)
+show_trading_lines = st.sidebar.checkbox("売買シグナル・TP/SLライン", value=True)
+
 st.query_params.update({
     "pair": pair_symbol,
     "htf": htf_trend,
@@ -186,7 +198,17 @@ def load_market_data(symbol):
             "Close": closes
         })
     
+    # 指標計算
     df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
+    df["SMA50"] = df["Close"].rolling(window=50, min_periods=1).mean()
+
+    # RSI (14) 計算
+    delta = df["Close"].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14, min_periods=1).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14, min_periods=1).mean()
+    rs = gain / (loss + 1e-10)
+    df["RSI"] = 100 - (100 / (1 + rs))
+
     return df, is_simulated
 
 df, is_simulated_data = load_market_data(pair_symbol)
@@ -284,124 +306,136 @@ with col_chart:
     
     time_col = "Datetime" if "Datetime" in df.columns else ("Date" if "Date" in df.columns else df.columns[0])
 
-    fig = go.Figure()
+    # RSI表示の有無に合わせてサブチャートのレイアウト構成を切替
+    if show_rsi:
+        fig = make_subplots(
+            rows=2, cols=1, shared_xaxes=True,
+            vertical_spacing=0.08, row_heights=[0.75, 0.25]
+        )
+    else:
+        fig = make_subplots(rows=1, cols=1)
 
-    # ローソク足
+    # 1. ローソク足
     fig.add_trace(go.Candlestick(
         x=df[time_col],
         open=df["Open"], high=df["High"],
         low=df["Low"], close=df["Close"],
         name="Price"
-    ))
+    ), row=1, col=1)
 
-    # EMA20
-    fig.add_trace(go.Scatter(
-        x=df[time_col], y=df["EMA20"],
-        line=dict(color="#2962FF", width=1.5),
-        name="5M EMA(20)"
-    ))
+    # 2. 移動平均線 (EMA20 & SMA50)
+    if show_ema20:
+        fig.add_trace(go.Scatter(
+            x=df[time_col], y=df["EMA20"],
+            line=dict(color="#2962FF", width=1.5),
+            name="5M EMA(20)"
+        ), row=1, col=1)
 
-    # --------------------------------------------------------------------------
-    # シグナル矢印・エントリー位置・損切り・利確ライン描画
-    # --------------------------------------------------------------------------
+    if show_sma50:
+        fig.add_trace(go.Scatter(
+            x=df[time_col], y=df["SMA50"],
+            line=dict(color="#FF6D00", width=1.5),
+            name="5M SMA(50)"
+        ), row=1, col=1)
+
+    # 3. 自動トレンドライン描画 (高値同士・安値同士の結線)
+    if show_trendlines and len(df) >= 30:
+        # 直近30本の中での局所高値・低値を簡略抽出
+        idx1, idx2 = len(df) - 30, len(df) - 1
+        x1, x2 = df[time_col].iloc[idx1], df[time_col].iloc[idx2]
+
+        # 高値レジスタンスライン
+        y_high1 = float(df["High"].iloc[idx1:idx1+10].max())
+        y_high2 = float(df["High"].iloc[idx2-10:idx2].max())
+        fig.add_trace(go.Scatter(
+            x=[x1, x2], y=[y_high1, y_high2],
+            mode="lines", line=dict(color="#E040FB", width=1.5, dash="dash"),
+            name="Resistance Line"
+        ), row=1, col=1)
+
+        # 安値サポートライン
+        y_low1 = float(df["Low"].iloc[idx1:idx1+10].min())
+        y_low2 = float(df["Low"].iloc[idx2-10:idx2].min())
+        fig.add_trace(go.Scatter(
+            x=[x1, x2], y=[y_low1, y_low2],
+            mode="lines", line=dict(color="#00E5FF", width=1.5, dash="dash"),
+            name="Support Line"
+        ), row=1, col=1)
+
+    # 4. 売買シグナル & エントリー・損切り・利確ライン
     latest_time = df[time_col].iloc[-1]
     price_fmt = ".3f" if "JPY" in pair_symbol else ".5f"
 
-    if signal == "BUY":
-        # 1. BUY シグナルアイコン
+    if show_trading_lines:
+        if signal == "BUY":
+            fig.add_trace(go.Scatter(
+                x=[latest_time], y=[df["Low"].iloc[-1] - 3 * pip_value],
+                mode="markers+text", marker=dict(symbol="triangle-up", size=16, color="#00E676"),
+                text=["<b>BUY ⚡</b>"], textposition="bottom center",
+                textfont=dict(color="#00E676", size=13), name="BUY Signal"
+            ), row=1, col=1)
+
+            fig.add_hline(y=current_price, line_dash="solid", line_color="#00B0FF", line_width=2,
+                          annotation_text=f"ENTRY ({current_price:{price_fmt}})", annotation_position="top right", row=1, col=1)
+            fig.add_hline(y=recent_high, line_dash="dash", line_color="#00E676", line_width=1.5,
+                          annotation_text=f"TP ({recent_high:{price_fmt}})", annotation_position="bottom right", row=1, col=1)
+            
+            sl_price = current_price - stop_pips * pip_value
+            fig.add_hline(y=sl_price, line_dash="dash", line_color="#FF5252", line_width=1.5,
+                          annotation_text=f"SL ({sl_price:{price_fmt}})", annotation_position="bottom right", row=1, col=1)
+
+            if enable_trail:
+                trail_price = current_price + 1.0 * pip_value
+                fig.add_hline(y=trail_price, line_dash="dot", line_color="#00E5FF", line_width=1,
+                              annotation_text="Trailing SL", annotation_position="top right", row=1, col=1)
+
+        elif signal == "SELL":
+            fig.add_trace(go.Scatter(
+                x=[latest_time], y=[df["High"].iloc[-1] + 3 * pip_value],
+                mode="markers+text", marker=dict(symbol="triangle-down", size=16, color="#FF5252"),
+                text=["<b>SELL ⚡</b>"], textposition="top center",
+                textfont=dict(color="#FF5252", size=13), name="SELL Signal"
+            ), row=1, col=1)
+
+            fig.add_hline(y=current_price, line_dash="solid", line_color="#00B0FF", line_width=2,
+                          annotation_text=f"ENTRY ({current_price:{price_fmt}})", annotation_position="top right", row=1, col=1)
+            fig.add_hline(y=recent_low, line_dash="dash", line_color="#00E676", line_width=1.5,
+                          annotation_text=f"TP ({recent_low:{price_fmt}})", annotation_position="bottom right", row=1, col=1)
+
+            sl_price = current_price + stop_pips * pip_value
+            fig.add_hline(y=sl_price, line_dash="dash", line_color="#FF5252", line_width=1.5,
+                          annotation_text=f"SL ({sl_price:{price_fmt}})", annotation_position="bottom right", row=1, col=1)
+
+            if enable_trail:
+                trail_price = current_price - 1.0 * pip_value
+                fig.add_hline(y=trail_price, line_dash="dot", line_color="#00E5FF", line_width=1,
+                              annotation_text="Trailing SL", annotation_position="bottom right", row=1, col=1)
+
+        else:
+            if "Uptrend" in htf_trend:
+                fig.add_hline(y=recent_5m_high, line_dash="dashdot", line_color="#FFD600", line_width=1.5,
+                              annotation_text=f"PLANNED BUY ENTRY ({recent_5m_high:{price_fmt}})", annotation_position="top right", row=1, col=1)
+            elif "Downtrend" in htf_trend:
+                fig.add_hline(y=recent_5m_low, line_dash="dashdot", line_color="#FFD600", line_width=1.5,
+                              annotation_text=f"PLANNED SELL ENTRY ({recent_5m_low:{price_fmt}})", annotation_position="bottom right", row=1, col=1)
+
+    # 5. RSI サブチャートプロット
+    if show_rsi:
         fig.add_trace(go.Scatter(
-            x=[latest_time],
-            y=[df["Low"].iloc[-1] - 3 * pip_value],
-            mode="markers+text",
-            marker=dict(symbol="triangle-up", size=16, color="#00E676"),
-            text=["<b>BUY ⚡</b>"],
-            textposition="bottom center",
-            textfont=dict(color="#00E676", size=13),
-            name="BUY Signal"
-        ))
+            x=df[time_col], y=df["RSI"],
+            line=dict(color="#E91E63", width=1.5),
+            name="RSI (14)"
+        ), row=2, col=1)
 
-        # 2. ポジション エントリーライン (現在価格で約定)
-        fig.add_hline(
-            y=current_price, line_dash="solid", line_color="#00B0FF", line_width=2,
-            annotation_text=f"ENTRY ({current_price:{price_fmt}})", annotation_position="top right"
-        )
+        # 買われすぎ (70)・売られすぎ (30) の基準線
+        fig.add_hline(y=70, line_dash="dash", line_color="#FF5252", line_width=1, row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="#00E676", line_width=1, row=2, col=1)
 
-        # 3. 利確 (TP) ライン
-        fig.add_hline(
-            y=recent_high, line_dash="dash", line_color="#00E676", line_width=1.5,
-            annotation_text=f"TP ({recent_high:{price_fmt}})", annotation_position="bottom right"
-        )
+        fig.update_yaxes(range=[0, 100], row=2, col=1)
 
-        # 4. 損切り (SL) ライン
-        sl_price = current_price - stop_pips * pip_value
-        fig.add_hline(
-            y=sl_price, line_dash="dash", line_color="#FF5252", line_width=1.5,
-            annotation_text=f"SL ({sl_price:{price_fmt}})", annotation_position="bottom right"
-        )
-
-        # 5. 建値トレールライン
-        if enable_trail:
-            trail_price = current_price + 1.0 * pip_value
-            fig.add_hline(
-                y=trail_price, line_dash="dot", line_color="#00E5FF", line_width=1,
-                annotation_text="Trailing SL", annotation_position="top right"
-            )
-
-    elif signal == "SELL":
-        # 1. SELL シグナルアイコン
-        fig.add_trace(go.Scatter(
-            x=[latest_time],
-            y=[df["High"].iloc[-1] + 3 * pip_value],
-            mode="markers+text",
-            marker=dict(symbol="triangle-down", size=16, color="#FF5252"),
-            text=["<b>SELL ⚡</b>"],
-            textposition="top center",
-            textfont=dict(color="#FF5252", size=13),
-            name="SELL Signal"
-        ))
-
-        # 2. ポジション エントリーライン (現在価格で約定)
-        fig.add_hline(
-            y=current_price, line_dash="solid", line_color="#00B0FF", line_width=2,
-            annotation_text=f"ENTRY ({current_price:{price_fmt}})", annotation_position="top right"
-        )
-
-        # 3. 利確 (TP) ライン
-        fig.add_hline(
-            y=recent_low, line_dash="dash", line_color="#00E676", line_width=1.5,
-            annotation_text=f"TP ({recent_low:{price_fmt}})", annotation_position="bottom right"
-        )
-
-        # 4. 損切り (SL) ライン
-        sl_price = current_price + stop_pips * pip_value
-        fig.add_hline(
-            y=sl_price, line_dash="dash", line_color="#FF5252", line_width=1.5,
-            annotation_text=f"SL ({sl_price:{price_fmt}})", annotation_position="bottom right"
-        )
-
-        # 5. 建値トレールライン
-        if enable_trail:
-            trail_price = current_price - 1.0 * pip_value
-            fig.add_hline(
-                y=trail_price, line_dash="dot", line_color="#00E5FF", line_width=1,
-                annotation_text="Trailing SL", annotation_position="bottom right"
-            )
-
-    else:
-        # エントリー未確定（待機中）の場合：エントリー予定（ブレイク目標値）ラインを描画
-        if "Uptrend" in htf_trend:
-            fig.add_hline(
-                y=recent_5m_high, line_dash="dashdot", line_color="#FFD600", line_width=1.5,
-                annotation_text=f"PLANNED BUY ENTRY ({recent_5m_high:{price_fmt}})", annotation_position="top right"
-            )
-        elif "Downtrend" in htf_trend:
-            fig.add_hline(
-                y=recent_5m_low, line_dash="dashdot", line_color="#FFD600", line_width=1.5,
-                annotation_text=f"PLANNED SELL ENTRY ({recent_5m_low:{price_fmt}})", annotation_position="bottom right"
-            )
-
+    # チャート全体レイアウト
     fig.update_layout(
-        height=520,
+        height=600 if show_rsi else 520,
         xaxis_rangeslider_visible=False,
         margin=dict(l=10, r=10, t=10, b=10),
         template="plotly_dark",
