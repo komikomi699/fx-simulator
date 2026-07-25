@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import yfinance as yf
 from datetime import datetime, timedelta
 import json
@@ -119,15 +118,16 @@ auto_trade = st.sidebar.toggle("自動売買エンジン (Auto-Trading)", value=
 enable_trail = st.sidebar.toggle("建値トレールストップ機能", value=init_trail)
 
 # ------------------------------------------------------------------------------
-# サイドバー：テクニカル分析表示切替（チェックボックス）
+# サイドバー：メインチャート合成分析表示切替（チェックボックス）
 # ------------------------------------------------------------------------------
 st.sidebar.markdown("---")
-st.sidebar.header("📊 チャート表示オプション")
+st.sidebar.header("📊 メインチャート重ね合わせ表示")
+show_history_trades = st.sidebar.checkbox("過去トレード履歴", value=True)
 show_trendlines = st.sidebar.checkbox("自動トレンドライン", value=True)
 show_ema20 = st.sidebar.checkbox("5M EMA(20)", value=True)
 show_sma50 = st.sidebar.checkbox("5M SMA(50)", value=False)
-show_rsi = st.sidebar.checkbox("RSI (14) サブチャート", value=True)
-show_trading_lines = st.sidebar.checkbox("売買シグナル・TP/SLライン", value=True)
+show_rsi_main = st.sidebar.checkbox("RSI (14) [メイン合成]", value=True)
+show_trading_lines = st.sidebar.checkbox("未来/現在のエントリー・TP・SLライン", value=True)
 
 st.query_params.update({
     "pair": pair_symbol,
@@ -198,11 +198,10 @@ def load_market_data(symbol):
             "Close": closes
         })
     
-    # 指標計算
     df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
     df["SMA50"] = df["Close"].rolling(window=50, min_periods=1).mean()
 
-    # RSI (14) 計算
+    # RSI (14)
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14, min_periods=1).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14, min_periods=1).mean()
@@ -266,6 +265,14 @@ st.markdown("---")
 # ------------------------------------------------------------------------------
 col_chart, col_logic = st.columns([3, 1])
 
+time_col = "Datetime" if "Datetime" in df.columns else ("Date" if "Date" in df.columns else df.columns[0])
+trade_history_data = [
+    {"日時": "2026-07-24 18:35", "銘柄": "USD/JPY", "種別": "BUY", "エントリー価格": 155.120, "決済価格": 155.240, "獲得Pips": "+12.0 pips", "損益 ($)": "+$120.00", "決済理由": "TP到達 (前回高値)"},
+    {"日時": "2026-07-24 16:10", "銘柄": "USD/JPY", "種別": "BUY", "エントリー価格": 154.900, "決済価格": 154.910, "獲得Pips": "+1.0 pips", "損益 ($)": "+$10.00", "決済理由": "建値トレール撤退"},
+    {"日時": "2026-07-24 14:25", "銘柄": "EUR/USD", "種別": "SELL", "エントリー価格": 1.08650, "決済価格": 1.08510, "獲得Pips": "+14.0 pips", "損益 ($)": "+$140.00", "決済理由": "TP到達 (前回安値)"},
+    {"日時": "2026-07-24 11:05", "銘柄": "USD/JPY", "種別": "BUY", "エントリー価格": 154.750, "決済価格": 154.670, "獲得Pips": "-8.0 pips", "損益 ($)": "-$80.00", "決済理由": "損切り(SL)ヒット"}
+]
+
 with col_logic:
     st.subheader("🔍 ロジック判定状況")
     
@@ -299,73 +306,95 @@ with col_logic:
         st.info(f"🔴 **SHORT (売り) エントリー**\n- 売値: {current_price:{fmt}}\n- 損切り(SL): {sl_val:{fmt}}\n- 利確(TP): {recent_low:{fmt}}")
     else:
         planned_price = recent_5m_high if "Uptrend" in htf_trend else recent_5m_low
-        st.text(f"ノーポジション (条件合致待ち)\nエントリー予定: {planned_price:{fmt}} 付近")
+        st.text(f"ノーポジション (条件合致待ち)\n未来のエントリー予定: {planned_price:{fmt}} 付近")
 
 with col_chart:
     st.subheader(f"📈 5分足チャート ({pair_symbol.replace('=X', '')})")
     
-    time_col = "Datetime" if "Datetime" in df.columns else ("Date" if "Date" in df.columns else df.columns[0])
+    fig = go.Figure()
 
-    # RSI表示の有無に合わせてサブチャートのレイアウト構成を切替
-    if show_rsi:
-        fig = make_subplots(
-            rows=2, cols=1, shared_xaxes=True,
-            vertical_spacing=0.08, row_heights=[0.75, 0.25]
-        )
-    else:
-        fig = make_subplots(rows=1, cols=1)
-
-    # 1. ローソク足
+    # 1. ローソク足 (第1Y軸: 価格)
     fig.add_trace(go.Candlestick(
-        x=df[time_col],
-        open=df["Open"], high=df["High"],
-        low=df["Low"], close=df["Close"],
-        name="Price"
-    ), row=1, col=1)
+        x=df[time_col], open=df["Open"], high=df["High"],
+        low=df["Low"], close=df["Close"], name="Price"
+    ))
 
-    # 2. 移動平均線 (EMA20 & SMA50)
+    # 2. 移動平均線 (第1Y軸)
     if show_ema20:
         fig.add_trace(go.Scatter(
             x=df[time_col], y=df["EMA20"],
-            line=dict(color="#2962FF", width=1.5),
-            name="5M EMA(20)"
-        ), row=1, col=1)
+            line=dict(color="#2962FF", width=1.5), name="5M EMA(20)"
+        ))
 
     if show_sma50:
         fig.add_trace(go.Scatter(
             x=df[time_col], y=df["SMA50"],
-            line=dict(color="#FF6D00", width=1.5),
-            name="5M SMA(50)"
-        ), row=1, col=1)
+            line=dict(color="#FF6D00", width=1.5), name="5M SMA(50)"
+        ))
 
-    # 3. 自動トレンドライン描画 (高値同士・安値同士の結線)
+    # 3. 自動トレンドライン (第1Y軸)
     if show_trendlines and len(df) >= 30:
-        # 直近30本の中での局所高値・低値を簡略抽出
         idx1, idx2 = len(df) - 30, len(df) - 1
         x1, x2 = df[time_col].iloc[idx1], df[time_col].iloc[idx2]
 
-        # 高値レジスタンスライン
         y_high1 = float(df["High"].iloc[idx1:idx1+10].max())
         y_high2 = float(df["High"].iloc[idx2-10:idx2].max())
         fig.add_trace(go.Scatter(
             x=[x1, x2], y=[y_high1, y_high2],
             mode="lines", line=dict(color="#E040FB", width=1.5, dash="dash"),
             name="Resistance Line"
-        ), row=1, col=1)
+        ))
 
-        # 安値サポートライン
         y_low1 = float(df["Low"].iloc[idx1:idx1+10].min())
         y_low2 = float(df["Low"].iloc[idx2-10:idx2].min())
         fig.add_trace(go.Scatter(
             x=[x1, x2], y=[y_low1, y_low2],
             mode="lines", line=dict(color="#00E5FF", width=1.5, dash="dash"),
             name="Support Line"
-        ), row=1, col=1)
+        ))
 
-    # 4. 売買シグナル & エントリー・損切り・利確ライン
-    latest_time = df[time_col].iloc[-1]
+    # 4. RSI メインチャート合成表示 (第2Y軸: yaxis='y2')
+    if show_rsi_main:
+        fig.add_trace(go.Scatter(
+            x=df[time_col], y=df["RSI"],
+            line=dict(color="rgba(233, 30, 99, 0.7)", width=2),
+            name="RSI (14)",
+            yaxis="y2"
+        ))
+
+        # RSI 70/30 基準線
+        fig.add_trace(go.Scatter(
+            x=[df[time_col].iloc[0], df[time_col].iloc[-1]], y=[70, 70],
+            mode="lines", line=dict(color="rgba(255, 82, 82, 0.4)", width=1, dash="dot"),
+            name="RSI 70 (Overbought)", yaxis="y2"
+        ))
+        fig.add_trace(go.Scatter(
+            x=[df[time_col].iloc[0], df[time_col].iloc[-1]], y=[30, 30],
+            mode="lines", line=dict(color="rgba(0, 230, 118, 0.4)", width=1, dash="dot"),
+            name="RSI 30 (Oversold)", yaxis="y2"
+        ))
+
     price_fmt = ".3f" if "JPY" in pair_symbol else ".5f"
 
+    # 5. 過去トレード履歴ライン (第1Y軸)
+    if show_history_trades:
+        for t in trade_history_data:
+            if ("JPY" in pair_symbol and "JPY" in t["銘柄"]) or ("USD" in pair_symbol and "USD" in t["銘柄"]):
+                entry_p = float(t["エントリー価格"])
+                exit_p = float(t["決済価格"])
+                color = "#00E676" if "+" in t["獲得Pips"] else "#FF5252"
+                
+                fig.add_hline(
+                    y=entry_p, line_dash="dot", line_color="#80D8FF", line_width=1,
+                    annotation_text=f"Past Entry ({entry_p:{price_fmt}})", annotation_position="top left"
+                )
+                fig.add_hline(
+                    y=exit_p, line_dash="dot", line_color=color, line_width=1,
+                    annotation_text=f"Past Exit ({exit_p:{price_fmt}})", annotation_position="bottom left"
+                )
+
+    # 6. 未来・現在の売買ライン (第1Y軸)
+    latest_time = df[time_col].iloc[-1]
     if show_trading_lines:
         if signal == "BUY":
             fig.add_trace(go.Scatter(
@@ -373,21 +402,16 @@ with col_chart:
                 mode="markers+text", marker=dict(symbol="triangle-up", size=16, color="#00E676"),
                 text=["<b>BUY ⚡</b>"], textposition="bottom center",
                 textfont=dict(color="#00E676", size=13), name="BUY Signal"
-            ), row=1, col=1)
+            ))
 
             fig.add_hline(y=current_price, line_dash="solid", line_color="#00B0FF", line_width=2,
-                          annotation_text=f"ENTRY ({current_price:{price_fmt}})", annotation_position="top right", row=1, col=1)
+                          annotation_text=f"CURRENT ENTRY ({current_price:{price_fmt}})", annotation_position="top right")
             fig.add_hline(y=recent_high, line_dash="dash", line_color="#00E676", line_width=1.5,
-                          annotation_text=f"TP ({recent_high:{price_fmt}})", annotation_position="bottom right", row=1, col=1)
+                          annotation_text=f"TP ({recent_high:{price_fmt}})", annotation_position="bottom right")
             
             sl_price = current_price - stop_pips * pip_value
             fig.add_hline(y=sl_price, line_dash="dash", line_color="#FF5252", line_width=1.5,
-                          annotation_text=f"SL ({sl_price:{price_fmt}})", annotation_position="bottom right", row=1, col=1)
-
-            if enable_trail:
-                trail_price = current_price + 1.0 * pip_value
-                fig.add_hline(y=trail_price, line_dash="dot", line_color="#00E5FF", line_width=1,
-                              annotation_text="Trailing SL", annotation_position="top right", row=1, col=1)
+                          annotation_text=f"SL ({sl_price:{price_fmt}})", annotation_position="bottom right")
 
         elif signal == "SELL":
             fig.add_trace(go.Scatter(
@@ -395,52 +419,48 @@ with col_chart:
                 mode="markers+text", marker=dict(symbol="triangle-down", size=16, color="#FF5252"),
                 text=["<b>SELL ⚡</b>"], textposition="top center",
                 textfont=dict(color="#FF5252", size=13), name="SELL Signal"
-            ), row=1, col=1)
+            ))
 
             fig.add_hline(y=current_price, line_dash="solid", line_color="#00B0FF", line_width=2,
-                          annotation_text=f"ENTRY ({current_price:{price_fmt}})", annotation_position="top right", row=1, col=1)
+                          annotation_text=f"CURRENT ENTRY ({current_price:{price_fmt}})", annotation_position="top right")
             fig.add_hline(y=recent_low, line_dash="dash", line_color="#00E676", line_width=1.5,
-                          annotation_text=f"TP ({recent_low:{price_fmt}})", annotation_position="bottom right", row=1, col=1)
+                          annotation_text=f"TP ({recent_low:{price_fmt}})", annotation_position="bottom right")
 
             sl_price = current_price + stop_pips * pip_value
             fig.add_hline(y=sl_price, line_dash="dash", line_color="#FF5252", line_width=1.5,
-                          annotation_text=f"SL ({sl_price:{price_fmt}})", annotation_position="bottom right", row=1, col=1)
-
-            if enable_trail:
-                trail_price = current_price - 1.0 * pip_value
-                fig.add_hline(y=trail_price, line_dash="dot", line_color="#00E5FF", line_width=1,
-                              annotation_text="Trailing SL", annotation_position="bottom right", row=1, col=1)
+                          annotation_text=f"SL ({sl_price:{price_fmt}})", annotation_position="bottom right")
 
         else:
             if "Uptrend" in htf_trend:
-                fig.add_hline(y=recent_5m_high, line_dash="dashdot", line_color="#FFD600", line_width=1.5,
-                              annotation_text=f"PLANNED BUY ENTRY ({recent_5m_high:{price_fmt}})", annotation_position="top right", row=1, col=1)
+                fig.add_hline(
+                    y=recent_5m_high, line_dash="dashdot", line_color="#FFD600", line_width=1.5,
+                    annotation_text=f"PLANNED BUY ENTRY ({recent_5m_high:{price_fmt}})", annotation_position="top right"
+                )
             elif "Downtrend" in htf_trend:
-                fig.add_hline(y=recent_5m_low, line_dash="dashdot", line_color="#FFD600", line_width=1.5,
-                              annotation_text=f"PLANNED SELL ENTRY ({recent_5m_low:{price_fmt}})", annotation_position="bottom right", row=1, col=1)
+                fig.add_hline(
+                    y=recent_5m_low, line_dash="dashdot", line_color="#FFD600", line_width=1.5,
+                    annotation_text=f"PLANNED SELL ENTRY ({recent_5m_low:{price_fmt}})", annotation_position="bottom right"
+                )
 
-    # 5. RSI サブチャートプロット
-    if show_rsi:
-        fig.add_trace(go.Scatter(
-            x=df[time_col], y=df["RSI"],
-            line=dict(color="#E91E63", width=1.5),
-            name="RSI (14)"
-        ), row=2, col=1)
-
-        # 買われすぎ (70)・売られすぎ (30) の基準線
-        fig.add_hline(y=70, line_dash="dash", line_color="#FF5252", line_width=1, row=2, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="#00E676", line_width=1, row=2, col=1)
-
-        fig.update_yaxes(range=[0, 100], row=2, col=1)
-
-    # チャート全体レイアウト
+    # 7. レイアウト設定（2軸合成チャート構成）
     fig.update_layout(
-        height=600 if show_rsi else 520,
+        height=540,
         xaxis_rangeslider_visible=False,
         margin=dict(l=10, r=10, t=10, b=10),
         template="plotly_dark",
         paper_bgcolor="#131722",
-        plot_bgcolor="#131722"
+        plot_bgcolor="#131722",
+        yaxis=dict(
+            title="Price",
+            side="left"
+        ),
+        yaxis2=dict(
+            title="RSI",
+            overlaying="y",
+            side="right",
+            range=[0, 100],
+            showgrid=False
+        )
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -448,10 +468,4 @@ with col_chart:
 # 6. 約定トレード履歴テーブル
 # ------------------------------------------------------------------------------
 st.subheader("📋 約定・トレード実行ログ (Trade Execution Log)")
-trade_history = [
-    {"日時": "2026-07-24 18:35", "銘柄": "USD/JPY", "種別": "BUY", "エントリー価格": "155.120", "決済価格": "155.240", "獲得Pips": "+12.0 pips", "損益 ($)": "+$120.00", "決済理由": "TP到達 (前回高値)"},
-    {"日時": "2026-07-24 16:10", "銘柄": "USD/JPY", "種別": "BUY", "エントリー価格": "154.900", "決済価格": "154.910", "獲得Pips": "+1.0 pips", "損益 ($)": "+$10.00", "決済理由": "建値トレール撤退"},
-    {"日時": "2026-07-24 14:25", "銘柄": "EUR/USD", "種別": "SELL", "エントリー価格": "1.08650", "決済価格": "1.08510", "獲得Pips": "+14.0 pips", "損益 ($)": "+$140.00", "決済理由": "TP到達 (前回安値)"},
-    {"日時": "2026-07-24 11:05", "銘柄": "USD/JPY", "種別": "BUY", "エントリー価格": "154.750", "決済価格": "154.670", "獲得Pips": "-8.0 pips", "損益 ($)": "-$80.00", "決済理由": "損切り(SL)ヒット"}
-]
-st.dataframe(pd.DataFrame(trade_history), use_container_width=True)
+st.dataframe(pd.DataFrame(trade_history_data), use_container_width=True)
