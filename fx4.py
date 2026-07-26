@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import json
 import os
 
-# 自動更新用のライブラリ（未インストールの場合は pip install streamlit-autorefresh が必要です）
+# 自動更新用のライブラリ
 try:
     from streamlit_autorefresh import st_autorefresh
     HAS_AUTOREFRESH = True
@@ -23,9 +23,22 @@ st.set_page_config(
     layout="wide"
 )
 
-# UIスタイルの最適化
+# ------------------------------------------------------------------------------
+# UIスタイルの最適化（1秒更新時の白フラッシュを完全ガードするCSS）
+# ------------------------------------------------------------------------------
 st.markdown("""
 <style>
+    /* 1. ページ全体の再読み込み時の白チラつきを抑える背景色固定 */
+    html, body, [data-testid="stAppViewContainer"], .stApp {
+        background-color: #0e1117 !important;
+    }
+    
+    /* 2. Plotlyチャート(iframe)が再描画される瞬間の白フレームを殺す */
+    iframe {
+        background-color: #131722 !important;
+    }
+    
+    /* 3. カード・メトリックのスタイル */
     .stMetric {
         background-color: #1e222d;
         padding: 12px;
@@ -38,9 +51,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 10秒ごとに滑らかに自動再描画（画面全体のチラつきを抑えるキー固定付き）
+# 1秒ごとに自動リフレッシュ（1,000ミリ秒）
 if HAS_AUTOREFRESH:
-    st_autorefresh(interval=10000, key="fx_data_refresh")
+    st_autorefresh(interval=1000, key="fx_data_refresh")
 
 # ------------------------------------------------------------------------------
 # 0. 設定の保存・復元処理
@@ -119,7 +132,7 @@ auto_trade = st.sidebar.toggle("自動売買エンジン", value=init_auto)
 enable_trail = st.sidebar.toggle("建値トレールストップ機能", value=init_trail)
 
 # ------------------------------------------------------------------------------
-# チャート表示オプション（シンプル可読性優先）
+# チャート表示オプション
 # ------------------------------------------------------------------------------
 st.sidebar.markdown("---")
 st.sidebar.header("📊 チャートの表示項目調整")
@@ -151,9 +164,9 @@ if st.sidebar.button("💾 現在の設定を保存", use_container_width=True):
     st.sidebar.success("保存完了")
 
 # ------------------------------------------------------------------------------
-# 2. 為替データ取得（TTLを短縮してリアルタイム性を向上）
+# 2. 為替データ取得（1秒更新用にTTLを1秒に設定）
 # ------------------------------------------------------------------------------
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=1)
 def load_market_data(symbol):
     is_simulated = False
     try:
@@ -165,7 +178,6 @@ def load_market_data(symbol):
             raise ValueError()
     except Exception:
         is_simulated = True
-        # 更新時にランダム値が変化するよう固定シードを排除
         periods = 80
         base_price = 155.00 if "JPY" in symbol else 1.0850
         times = [datetime.now() - timedelta(minutes=5 * (periods - i)) for i in range(periods)]
@@ -233,7 +245,7 @@ k5.metric("シグナル", signal)
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 5. 視認性極大化チャート描画 (Clean & High-Visibility Chart)
+# 5. 視認性極大化チャート描画
 # ------------------------------------------------------------------------------
 col_chart, col_logic = st.columns([3.2, 1])
 
@@ -281,7 +293,7 @@ with col_chart:
         fig.add_hline(y=recent_high, line_dash="dash", line_color="#FF4081", line_width=1, annotation_text="直近高値")
         fig.add_hline(y=recent_low, line_dash="dash", line_color="#00E5FF", line_width=1, annotation_text="直近安値")
 
-    # 4. RSIのスマート背景カラー化
+    # 4. RSI背景表示
     if show_rsi_band:
         last_rsi = float(df["RSI"].iloc[-1])
         if last_rsi >= 70:
@@ -293,7 +305,7 @@ with col_chart:
                           fillcolor="rgba(0, 230, 118, 0.15)", line_width=0,
                           annotation_text="RSI 売られすぎ", annotation_position="bottom left")
 
-    # 5. 過去のトレードエントリー/決済位置
+    # 5. 過去トレード履歴
     price_fmt = ".3f" if "JPY" in pair_symbol else ".5f"
     if show_history_trades:
         for t in trade_history_data:
@@ -301,7 +313,7 @@ with col_chart:
                 fig.add_hline(y=float(t["エントリー価格"]), line_dash="dot", line_color="#80D8FF", line_width=1)
                 fig.add_hline(y=float(t["決済価格"]), line_dash="dot", line_color="#00E676", line_width=1)
 
-    # 6. 未来・現在の売買ターゲットライン
+    # 6. 売買ターゲットライン
     if show_trading_lines:
         if signal == "BUY":
             fig.add_hline(y=current_price, line_color="#00B0FF", line_width=2, annotation_text=f"BUY ENTRY: {current_price:{price_fmt}}")
@@ -315,7 +327,7 @@ with col_chart:
             planned = recent_5m_high if "Uptrend" in htf_trend else recent_5m_low
             fig.add_hline(y=planned, line_dash="dashdot", line_color="#FFD600", line_width=1.5, annotation_text=f"PLANNED ENTRY: {planned:{price_fmt}}")
 
-    # ★ ズーム維持・描画崩れ防止用設定 (uirevision)
+    # ズーム倍率・表示位置の保持設定
     fig.update_layout(
         height=560,
         xaxis_rangeslider_visible=False,
@@ -323,7 +335,7 @@ with col_chart:
         template="plotly_dark",
         paper_bgcolor="#131722",
         plot_bgcolor="#131722",
-        uirevision=f"{pair_symbol}_{htf_trend}",  # 通貨ペア変更時以外は拡大状態を固定維持
+        uirevision=f"{pair_symbol}_{htf_trend}",
         yaxis=dict(
             title="Price",
             side="right",
@@ -336,7 +348,6 @@ with col_chart:
         )
     )
 
-    # ★ key設定とレスポンシブオプションでチラつきをカット
     st.plotly_chart(
         fig,
         use_container_width=True,
