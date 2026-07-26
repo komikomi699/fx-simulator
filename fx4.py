@@ -6,6 +6,7 @@ import yfinance as yf
 from datetime import datetime, timedelta
 import json
 import os
+import time  # 追加
 
 # ------------------------------------------------------------------------------
 # ページ基本設定
@@ -15,6 +16,10 @@ st.set_page_config(
     page_icon="⚡",
     layout="wide"
 )
+
+# 自動更新用の設定（サイドバー等に設置してもOK）
+# 5分足のスキャルピングであれば、10秒〜30秒ごとの更新が現実的です
+UPDATE_INTERVAL = 10 
 
 # UIスタイルの最適化
 st.markdown("""
@@ -107,9 +112,7 @@ st.sidebar.header("🤖 自動売買 (Auto-Trader)")
 auto_trade = st.sidebar.toggle("自動売買エンジン", value=init_auto)
 enable_trail = st.sidebar.toggle("建値トレールストップ機能", value=init_trail)
 
-# ------------------------------------------------------------------------------
-# チャート表示オプション（シンプル可読性優先）
-# ------------------------------------------------------------------------------
+# チャート表示オプション
 st.sidebar.markdown("---")
 st.sidebar.header("📊 チャートの表示項目調整")
 show_ema20 = st.sidebar.checkbox("5M EMA(20) [移動平均線]", value=True)
@@ -140,9 +143,9 @@ if st.sidebar.button("💾 現在の設定を保存", use_container_width=True):
     st.sidebar.success("保存完了")
 
 # ------------------------------------------------------------------------------
-# 2. 為替データ取得
+# 2. 為替データ取得 (キャッシュ時間を短縮)
 # ------------------------------------------------------------------------------
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=10)  # 更新頻度に合わせてTTLを10秒に短縮
 def load_market_data(symbol):
     is_simulated = False
     try:
@@ -154,7 +157,8 @@ def load_market_data(symbol):
             raise ValueError()
     except Exception:
         is_simulated = True
-        np.random.seed(42)
+        # シミュレーションデータが毎回ランダムに動くよう、シード値に現在の「分」を混ぜるなどの工夫
+        np.random.seed(int(time.time()) % 1000)
         periods = 80
         base_price = 155.00 if "JPY" in symbol else 1.0850
         times = [datetime.now() - timedelta(minutes=5 * (periods - i)) for i in range(periods)]
@@ -209,6 +213,9 @@ if htf_pass and breakout_pass and target_pass:
 # ------------------------------------------------------------------------------
 st.title("⚡ 水島流 MTF スキャルピング & 自動売買シミュレーター")
 
+# 最終更新時刻を表示して、動いているか視認できるようにする
+st.caption(f"最終更新日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ( {UPDATE_INTERVAL}秒ごとに自動更新中 )")
+
 if is_simulated_data:
     st.info("💡 市場休場中または取得制限のため、シミュレーション用チャートを表示しています。")
 
@@ -222,14 +229,14 @@ k5.metric("シグナル", signal)
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 5. 視認性極大化チャート描画 (Clean & High-Visibility Chart)
+# 5. チャート描画
 # ------------------------------------------------------------------------------
 col_chart, col_logic = st.columns([3.2, 1])
 
 time_col = "Datetime" if "Datetime" in df.columns else df.columns[0]
 trade_history_data = [
-    {"日時": "2026-07-24 18:35", "銘柄": "USD/JPY", "種別": "BUY", "エントリー価格": 155.120, "決済価格": 155.240, "獲得Pips": "+12.0 pips", "損益 ($)": "+$120.00"},
-    {"日時": "2026-07-24 14:25", "銘柄": "EUR/USD", "種別": "SELL", "エントリー価格": 1.08650, "決済価格": 1.08510, "獲得Pips": "+14.0 pips", "損益 ($)": "+$140.00"}
+    {"日時": "2026-07-24 18:35", "銘柄": "USD/JPY", "种別": "BUY", "エントリー価格": 155.120, "決済価格": 155.240, "獲得Pips": "+12.0 pips", "損益 ($)": "+$120.00"},
+    {"日時": "2026-07-24 14:25", "銘柄": "EUR/USD", "种別": "SELL", "エントリー価格": 1.08650, "決済価格": 1.08510, "獲得Pips": "+14.0 pips", "損益 ($)": "+$140.00"}
 ]
 
 with col_logic:
@@ -250,27 +257,22 @@ with col_chart:
     st.subheader(f"📈 5分足メインチャート ({pair_symbol.replace('=X', '')})")
     
     fig = go.Figure()
-
-    # 1. ローソク足（鮮明度を高く調整）
     fig.add_trace(go.Candlestick(
         x=df[time_col], open=df["Open"], high=df["High"],
         low=df["Low"], close=df["Close"], name="価格",
         increasing_line_color="#00E676", decreasing_line_color="#FF5252"
     ))
 
-    # 2. 5M EMA(20)
     if show_ema20:
         fig.add_trace(go.Scatter(
             x=df[time_col], y=df["EMA20"],
             line=dict(color="#2962FF", width=2), name="EMA(20)"
         ))
 
-    # 3. 高値・安値レジサポ線
     if show_trendlines:
         fig.add_hline(y=recent_high, line_dash="dash", line_color="#FF4081", line_width=1, annotation_text="直近高値")
         fig.add_hline(y=recent_low, line_dash="dash", line_color="#00E5FF", line_width=1, annotation_text="直近安値")
 
-    # 4. RSIのスマート背景カラー化 (過熱感を背景色でソフトに表示し、メインチャートを汚さない)
     if show_rsi_band:
         last_rsi = float(df["RSI"].iloc[-1])
         if last_rsi >= 70:
@@ -282,7 +284,6 @@ with col_chart:
                           fillcolor="rgba(0, 230, 118, 0.15)", line_width=0,
                           annotation_text="RSI 売られすぎ", annotation_position="bottom left")
 
-    # 5. 過去のトレードエントリー/決済位置
     price_fmt = ".3f" if "JPY" in pair_symbol else ".5f"
     if show_history_trades:
         for t in trade_history_data:
@@ -290,7 +291,6 @@ with col_chart:
                 fig.add_hline(y=float(t["エントリー価格"]), line_dash="dot", line_color="#80D8FF", line_width=1)
                 fig.add_hline(y=float(t["決済価格"]), line_dash="dot", line_color="#00E676", line_width=1)
 
-    # 6. 未来・現在の売買ターゲットライン
     if show_trading_lines:
         if signal == "BUY":
             fig.add_hline(y=current_price, line_color="#00B0FF", line_width=2, annotation_text=f"BUY ENTRY: {current_price:{price_fmt}}")
@@ -304,24 +304,12 @@ with col_chart:
             planned = recent_5m_high if "Uptrend" in htf_trend else recent_5m_low
             fig.add_hline(y=planned, line_dash="dashdot", line_color="#FFD600", line_width=1.5, annotation_text=f"PLANNED ENTRY: {planned:{price_fmt}}")
 
-    # チャートの視認性を極限まで高めるレイアウト設定
     fig.update_layout(
-        height=560,
-        xaxis_rangeslider_visible=False,
-        margin=dict(l=10, r=10, t=10, b=10),
-        template="plotly_dark",
-        paper_bgcolor="#131722",
-        plot_bgcolor="#131722",
-        yaxis=dict(
-            title="Price",
-            side="right",
-            showgrid=True,
-            gridcolor="#2a2e39"
-        ),
-        xaxis=dict(
-            showgrid=True,
-            gridcolor="#2a2e39"
-        )
+        height=560, xaxis_rangeslider_visible=False,
+        margin=dict(l=10, r=10, t=10, b=10), template="plotly_dark",
+        paper_bgcolor="#131722", plot_bgcolor="#131722",
+        yaxis=dict(title="Price", side="right", showgrid=True, gridcolor="#2a2e39"),
+        xaxis=dict(showgrid=True, gridcolor="#2a2e39")
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -330,3 +318,9 @@ with col_chart:
 # ------------------------------------------------------------------------------
 st.subheader("📋 トレード実行ログ")
 st.dataframe(pd.DataFrame(trade_history_data), use_container_width=True)
+
+# ------------------------------------------------------------------------------
+# 7. ★自動更新エンジン (ここを追加)
+# ------------------------------------------------------------------------------
+time.sleep(UPDATE_INTERVAL)
+st.rerun()
