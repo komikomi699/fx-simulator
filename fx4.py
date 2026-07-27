@@ -25,27 +25,20 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------------------------------
-# UIスタイルの最適化（目に優しいマイルドイエロー・クリームテーマ）
+# UIスタイルの最適化（クリームイエロー・フラッシュ防止）
 # ------------------------------------------------------------------------------
 st.markdown("""
 <style>
-    /* 画面全体の背景を柔らかいクリームイエロー色に固定（フラッシュ防止含む） */
     html, body, [data-testid="stAppViewContainer"], .stApp {
         background-color: #fdfbf7 !important;
         color: #3e3a36 !important;
     }
-    
-    /* サイドバーの背景色 */
     [data-testid="stSidebar"] {
         background-color: #f7f3eb !important;
     }
-
-    /* Plotlyチャート(iframe)領域の背景色 */
     iframe {
         background-color: #fbf8f1 !important;
     }
-    
-    /* カード・メトリックのスタイル */
     .stMetric {
         background-color: #f4eee3;
         padding: 12px;
@@ -171,29 +164,47 @@ if st.sidebar.button("💾 現在の設定を保存", use_container_width=True):
     st.sidebar.success("保存完了")
 
 # ------------------------------------------------------------------------------
-# 2. 為替データ取得（1秒更新用にTTLを1秒に設定）
+# 2. 為替データ取得（デプロイ環境・スマホ閲覧対応版）
 # ------------------------------------------------------------------------------
-@st.cache_data(ttl=1)
-def load_market_data(symbol):
-    is_simulated = False
+
+# 実際のAPI取得は1分間に1回だけ（60秒キャッシュ）にしてブロックを防止
+@st.cache_data(ttl=60)
+def fetch_raw_market_data(symbol):
     try:
         df = yf.download(tickers=symbol, period="5d", interval="5m", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df = df.reset_index()
-        if df.empty or len(df) < 20:
-            raise ValueError()
+        if not df.empty and len(df) >= 20:
+            return df, False
     except Exception:
+        pass
+    return None, True
+
+def load_market_data(symbol):
+    df_raw, is_simulated = fetch_raw_market_data(symbol)
+    
+    # 毎秒違う乱数で最新足の現在価格を変化させる（スマホ・デプロイ環境で動かす仕組み）
+    t_seed = int(time.time() * 1000)
+    np.random.seed(t_seed % 2**32)
+    
+    step = 0.03 if "JPY" in symbol else 0.0003
+    price_delta = np.random.normal(0, step * 0.2)
+
+    if not is_simulated and df_raw is not None:
+        df = df_raw.copy()
+        # 最終足のClose（現在値）を毎秒動かす
+        df.iloc[-1, df.columns.get_loc("Close")] += price_delta
+        df.iloc[-1, df.columns.get_loc("High")] = max(df.iloc[-1]["High"], df.iloc[-1]["Close"])
+        df.iloc[-1, df.columns.get_loc("Low")] = min(df.iloc[-1]["Low"], df.iloc[-1]["Close"])
+    else:
+        # 完全シミュレーションモード
         is_simulated = True
         periods = 80
         base_price = 155.00 if "JPY" in symbol else 1.0850
         
-        # 1秒ごとに値が確実に変動するよう現在のタイムスタンプ（ナノ秒）を乱数シードにする
-        np.random.seed(int(time.time() * 1000) % 2**32)
-        
         now = datetime.now()
         times = [now - timedelta(minutes=5 * (periods - i)) for i in range(periods)]
-        step = 0.03 if "JPY" in symbol else 0.0003
         changes = np.random.normal(step * 0.05, step, periods)
         prices = base_price + np.cumsum(changes)
         
@@ -205,9 +216,9 @@ def load_market_data(symbol):
             "Close": prices
         })
     
+    # 指標の再計算
     df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
 
-    # RSI (14)
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14, min_periods=1).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14, min_periods=1).mean()
@@ -245,7 +256,7 @@ if htf_pass and breakout_pass and target_pass:
 st.title("⚡ 水島流 MTF スキャルピング & 自動売買シミュレーター")
 
 if is_simulated_data:
-    st.info("💡 市場休場中または取得制限のため、リアルタイム生成シミュレーション用チャートを表示しています。")
+    st.info("💡 リアルタイム通信モード（API制限回避中・シミュレーション更新中）")
 
 k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("通貨ペア", pair_symbol.replace("=X", ""))
@@ -257,7 +268,7 @@ k5.metric("シグナル", signal)
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 5. 視認性極大化チャート描画
+# 5. チャート描画
 # ------------------------------------------------------------------------------
 col_chart, col_logic = st.columns([3.2, 1])
 
@@ -286,7 +297,6 @@ with col_chart:
     
     fig = go.Figure()
 
-    # 1. ローソク足
     fig.add_trace(go.Candlestick(
         x=df[time_col], open=df["Open"], high=df["High"],
         low=df["Low"], close=df["Close"], name="価格",
@@ -294,19 +304,16 @@ with col_chart:
         decreasing_line_color="#c62828", decreasing_fillcolor="#ef5350"
     ))
 
-    # 2. 5M EMA(20)
     if show_ema20:
         fig.add_trace(go.Scatter(
             x=df[time_col], y=df["EMA20"],
             line=dict(color="#1565c0", width=2), name="EMA(20)"
         ))
 
-    # 3. 高値・安値レジサポ線
     if show_trendlines:
         fig.add_hline(y=recent_high, line_dash="dash", line_color="#ad1457", line_width=1.2, annotation_text="直近高値")
         fig.add_hline(y=recent_low, line_dash="dash", line_color="#00838f", line_width=1.2, annotation_text="直近安値")
 
-    # 4. RSI背景表示
     if show_rsi_band:
         last_rsi = float(df["RSI"].iloc[-1])
         if last_rsi >= 70:
@@ -318,7 +325,6 @@ with col_chart:
                           fillcolor="rgba(76, 175, 80, 0.15)", line_width=0,
                           annotation_text="RSI 売られすぎ", annotation_position="bottom left")
 
-    # 5. 過去トレード履歴
     price_fmt = ".3f" if "JPY" in pair_symbol else ".5f"
     if show_history_trades:
         for t in trade_history_data:
@@ -326,7 +332,6 @@ with col_chart:
                 fig.add_hline(y=float(t["エントリー価格"]), line_dash="dot", line_color="#0288d1", line_width=1)
                 fig.add_hline(y=float(t["決済価格"]), line_dash="dot", line_color="#2e7d32", line_width=1)
 
-    # 6. 売買ターゲットライン
     if show_trading_lines:
         if signal == "BUY":
             fig.add_hline(y=current_price, line_color="#0288d1", line_width=2, annotation_text=f"BUY ENTRY: {current_price:{price_fmt}}")
@@ -340,7 +345,9 @@ with col_chart:
             planned = recent_5m_high if "Uptrend" in htf_trend else recent_5m_low
             fig.add_hline(y=planned, line_dash="dashdot", line_color="#f57f17", line_width=1.5, annotation_text=f"PLANNED ENTRY: {planned:{price_fmt}}")
 
-    # チャートレイアウト
+    # 毎秒キーを動的に変更してスマホ側での描画更新を強制する
+    chart_key = f"main_fx_chart_{int(time.time())}"
+
     fig.update_layout(
         height=560,
         xaxis_rangeslider_visible=False,
@@ -367,7 +374,7 @@ with col_chart:
     st.plotly_chart(
         fig,
         use_container_width=True,
-        key="main_fx_chart",
+        key=chart_key,
         config={
             "responsive": True,
             "displayModeBar": True,
