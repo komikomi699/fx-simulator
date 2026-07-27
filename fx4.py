@@ -6,6 +6,7 @@ import yfinance as yf
 from datetime import datetime, timedelta
 import json
 import os
+import time
 
 # 自動更新用のライブラリ
 try:
@@ -28,7 +29,7 @@ st.set_page_config(
 # ------------------------------------------------------------------------------
 st.markdown("""
 <style>
-    /* 1. 画面全体の背景を柔らかいクリームイエロー色に固定（フラッシュ防止含む） */
+    /* 画面全体の背景を柔らかいクリームイエロー色に固定（フラッシュ防止含む） */
     html, body, [data-testid="stAppViewContainer"], .stApp {
         background-color: #fdfbf7 !important;
         color: #3e3a36 !important;
@@ -39,12 +40,12 @@ st.markdown("""
         background-color: #f7f3eb !important;
     }
 
-    /* 2. Plotlyチャート(iframe)領域の背景色 */
+    /* Plotlyチャート(iframe)領域の背景色 */
     iframe {
         background-color: #fbf8f1 !important;
     }
     
-    /* 3. カード・メトリックのスタイル */
+    /* カード・メトリックのスタイル */
     .stMetric {
         background-color: #f4eee3;
         padding: 12px;
@@ -186,9 +187,14 @@ def load_market_data(symbol):
         is_simulated = True
         periods = 80
         base_price = 155.00 if "JPY" in symbol else 1.0850
-        times = [datetime.now() - timedelta(minutes=5 * (periods - i)) for i in range(periods)]
+        
+        # 1秒ごとに値が確実に変動するよう現在のタイムスタンプ（ナノ秒）を乱数シードにする
+        np.random.seed(int(time.time() * 1000) % 2**32)
+        
+        now = datetime.now()
+        times = [now - timedelta(minutes=5 * (periods - i)) for i in range(periods)]
         step = 0.03 if "JPY" in symbol else 0.0003
-        changes = np.random.normal(step * 0.1, step, periods)
+        changes = np.random.normal(step * 0.05, step, periods)
         prices = base_price + np.cumsum(changes)
         
         df = pd.DataFrame({
@@ -239,7 +245,7 @@ if htf_pass and breakout_pass and target_pass:
 st.title("⚡ 水島流 MTF スキャルピング & 自動売買シミュレーター")
 
 if is_simulated_data:
-    st.info("💡 市場休場中または取得制限のため、シミュレーション用チャートを表示しています。")
+    st.info("💡 市場休場中または取得制限のため、リアルタイム生成シミュレーション用チャートを表示しています。")
 
 k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("通貨ペア", pair_symbol.replace("=X", ""))
@@ -280,7 +286,7 @@ with col_chart:
     
     fig = go.Figure()
 
-    # 1. ローソク足（クリーム背景に映える落ち着いたグリーンとシックな赤）
+    # 1. ローソク足
     fig.add_trace(go.Candlestick(
         x=df[time_col], open=df["Open"], high=df["High"],
         low=df["Low"], close=df["Close"], name="価格",
@@ -334,7 +340,7 @@ with col_chart:
             planned = recent_5m_high if "Uptrend" in htf_trend else recent_5m_low
             fig.add_hline(y=planned, line_dash="dashdot", line_color="#f57f17", line_width=1.5, annotation_text=f"PLANNED ENTRY: {planned:{price_fmt}}")
 
-    # チャートレイアウト（目に優しい黄色/サンドベージュ調）
+    # チャートレイアウト
     fig.update_layout(
         height=560,
         xaxis_rangeslider_visible=False,
