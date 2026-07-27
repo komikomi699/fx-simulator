@@ -24,29 +24,37 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------------------------------
-# UIスタイルの最適化（1秒更新時の白フラッシュを完全ガードするCSS）
+# UIスタイルの最適化（ライトテーマ化 & カードデザイン）
 # ------------------------------------------------------------------------------
 st.markdown("""
 <style>
-    /* 1. ページ全体の再読み込み時の白チラつきを抑える背景色固定 */
+    /* 1. ページ全体を明るい背景に統一 */
     html, body, [data-testid="stAppViewContainer"], .stApp {
-        background-color: #0e1117 !important;
+        background-color: #f8f9fa !important;
+        color: #212529 !important;
     }
     
-    /* 2. Plotlyチャート(iframe)が再描画される瞬間の白フレームを殺す */
+    /* 2. サイドバーの背景設定 */
+    [data-testid="stSidebar"] {
+        background-color: #ffffff !important;
+        border-right: 1px solid #e9ecef;
+    }
+    
+    /* 3. Plotlyチャート(iframe)の背景を白に統一 */
     iframe {
-        background-color: #131722 !important;
+        background-color: #ffffff !important;
     }
     
-    /* 3. カード・メトリックのスタイル */
+    /* 4. メトリックカードのライトスタイル */
     .stMetric {
-        background-color: #1e222d;
+        background-color: #ffffff;
         padding: 12px;
         border-radius: 8px;
-        border: 1px solid #2a2e39;
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
     .stMetric label, .stMetric [data-testid="stMetricValue"], .stMetric [data-testid="stMetricDelta"] {
-        color: #f0f2f6 !important;
+        color: #1e293b !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -245,7 +253,7 @@ k5.metric("シグナル", signal)
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 5. 視認性極大化チャート描画
+# 5. 視認性極大化チャート描画 (ライトテーマ)
 # ------------------------------------------------------------------------------
 col_chart, col_logic = st.columns([3.2, 1])
 
@@ -274,11 +282,12 @@ with col_chart:
     
     fig = go.Figure()
 
-    # 1. ローソク足
+    # 1. ローソク足（ライトテーマに映える明るい緑・赤）
     fig.add_trace(go.Candlestick(
         x=df[time_col], open=df["Open"], high=df["High"],
         low=df["Low"], close=df["Close"], name="価格",
-        increasing_line_color="#00E676", decreasing_line_color="#FF5252"
+        increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
+        increasing_fillcolor="#26a69a", decreasing_fillcolor="#ef5350"
     ))
 
     # 2. 5M EMA(20)
@@ -290,19 +299,19 @@ with col_chart:
 
     # 3. 高値・安値レジサポ線
     if show_trendlines:
-        fig.add_hline(y=recent_high, line_dash="dash", line_color="#FF4081", line_width=1, annotation_text="直近高値")
-        fig.add_hline(y=recent_low, line_dash="dash", line_color="#00E5FF", line_width=1, annotation_text="直近安値")
+        fig.add_hline(y=recent_high, line_dash="dash", line_color="#d32f2f", line_width=1.5, annotation_text="直近高値")
+        fig.add_hline(y=recent_low, line_dash="dash", line_color="#1976d2", line_width=1.5, annotation_text="直近安値")
 
     # 4. RSI背景表示
     if show_rsi_band:
         last_rsi = float(df["RSI"].iloc[-1])
         if last_rsi >= 70:
             fig.add_vrect(x0=df[time_col].iloc[-10], x1=df[time_col].iloc[-1],
-                          fillcolor="rgba(255, 82, 82, 0.15)", line_width=0,
+                          fillcolor="rgba(239, 83, 80, 0.2)", line_width=0,
                           annotation_text="RSI 買われすぎ", annotation_position="top left")
         elif last_rsi <= 30:
             fig.add_vrect(x0=df[time_col].iloc[-10], x1=df[time_col].iloc[-1],
-                          fillcolor="rgba(0, 230, 118, 0.15)", line_width=0,
+                          fillcolor="rgba(38, 166, 154, 0.2)", line_width=0,
                           annotation_text="RSI 売られすぎ", annotation_position="bottom left")
 
     # 5. 過去トレード履歴
@@ -310,41 +319,41 @@ with col_chart:
     if show_history_trades:
         for t in trade_history_data:
             if ("JPY" in pair_symbol and "JPY" in t["銘柄"]) or ("USD" in pair_symbol and "USD" in t["銘柄"]):
-                fig.add_hline(y=float(t["エントリー価格"]), line_dash="dot", line_color="#80D8FF", line_width=1)
-                fig.add_hline(y=float(t["決済価格"]), line_dash="dot", line_color="#00E676", line_width=1)
+                fig.add_hline(y=float(t["エントリー価格"]), line_dash="dot", line_color="#0288d1", line_width=1)
+                fig.add_hline(y=float(t["決済価格"]), line_dash="dot", line_color="#2e7d32", line_width=1)
 
     # 6. 売買ターゲットライン
     if show_trading_lines:
         if signal == "BUY":
-            fig.add_hline(y=current_price, line_color="#00B0FF", line_width=2, annotation_text=f"BUY ENTRY: {current_price:{price_fmt}}")
-            fig.add_hline(y=recent_high, line_dash="longdash", line_color="#00E676", line_width=1.5, annotation_text="TP (利確)")
-            fig.add_hline(y=current_price - stop_pips * pip_value, line_dash="longdash", line_color="#FF5252", line_width=1.5, annotation_text="SL (損切)")
+            fig.add_hline(y=current_price, line_color="#0288d1", line_width=2, annotation_text=f"BUY ENTRY: {current_price:{price_fmt}}")
+            fig.add_hline(y=recent_high, line_dash="longdash", line_color="#2e7d32", line_width=1.5, annotation_text="TP (利確)")
+            fig.add_hline(y=current_price - stop_pips * pip_value, line_dash="longdash", line_color="#c62828", line_width=1.5, annotation_text="SL (損切)")
         elif signal == "SELL":
-            fig.add_hline(y=current_price, line_color="#00B0FF", line_width=2, annotation_text=f"SELL ENTRY: {current_price:{price_fmt}}")
-            fig.add_hline(y=recent_low, line_dash="longdash", line_color="#00E676", line_width=1.5, annotation_text="TP (利確)")
-            fig.add_hline(y=current_price + stop_pips * pip_value, line_dash="longdash", line_color="#FF5252", line_width=1.5, annotation_text="SL (損切)")
+            fig.add_hline(y=current_price, line_color="#0288d1", line_width=2, annotation_text=f"SELL ENTRY: {current_price:{price_fmt}}")
+            fig.add_hline(y=recent_low, line_dash="longdash", line_color="#2e7d32", line_width=1.5, annotation_text="TP (利確)")
+            fig.add_hline(y=current_price + stop_pips * pip_value, line_dash="longdash", line_color="#c62828", line_width=1.5, annotation_text="SL (損切)")
         else:
             planned = recent_5m_high if "Uptrend" in htf_trend else recent_5m_low
-            fig.add_hline(y=planned, line_dash="dashdot", line_color="#FFD600", line_width=1.5, annotation_text=f"PLANNED ENTRY: {planned:{price_fmt}}")
+            fig.add_hline(y=planned, line_dash="dashdot", line_color="#f57f17", line_width=1.5, annotation_text=f"PLANNED ENTRY: {planned:{price_fmt}}")
 
-    # ズーム倍率・表示位置の保持設定
+    # 💡 uirevision=True にすることで1秒リフレッシュ時も表示範囲・ズーム状態を固定
     fig.update_layout(
         height=560,
         xaxis_rangeslider_visible=False,
         margin=dict(l=10, r=10, t=10, b=10),
-        template="plotly_dark",
-        paper_bgcolor="#131722",
-        plot_bgcolor="#131722",
-        uirevision=f"{pair_symbol}_{htf_trend}",
+        template="plotly_white",
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        uirevision=True,  # 連続更新時のズーム位置の固定
         yaxis=dict(
             title="Price",
             side="right",
             showgrid=True,
-            gridcolor="#2a2e39"
+            gridcolor="#e9ecef"
         ),
         xaxis=dict(
             showgrid=True,
-            gridcolor="#2a2e39"
+            gridcolor="#e9ecef"
         )
     )
 
