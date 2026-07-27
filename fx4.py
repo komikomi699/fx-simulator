@@ -24,28 +24,21 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------------------------------
-# UIスタイルの最適化（ライトテーマ化 & カードデザイン）
+# UIスタイルの最適化（ライトテーマ）
 # ------------------------------------------------------------------------------
 st.markdown("""
 <style>
-    /* 1. ページ全体を明るい背景に統一 */
     html, body, [data-testid="stAppViewContainer"], .stApp {
         background-color: #f8f9fa !important;
         color: #212529 !important;
     }
-    
-    /* 2. サイドバーの背景設定 */
     [data-testid="stSidebar"] {
         background-color: #ffffff !important;
         border-right: 1px solid #e9ecef;
     }
-    
-    /* 3. Plotlyチャート(iframe)の背景を白に統一 */
     iframe {
         background-color: #ffffff !important;
     }
-    
-    /* 4. メトリックカードのライトスタイル */
     .stMetric {
         background-color: #ffffff;
         padding: 12px;
@@ -59,9 +52,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 1秒ごとに自動リフレッシュ（1,000ミリ秒）
+# 安定動作のため更新間隔を3秒（3000ms）に設定
+# (1秒だとyfinanceのアクセス制限ですぐに止まるため)
 if HAS_AUTOREFRESH:
-    st_autorefresh(interval=1000, key="fx_data_refresh")
+    st_autorefresh(interval=3000, key="fx_data_refresh")
 
 # ------------------------------------------------------------------------------
 # 0. 設定の保存・復元処理
@@ -150,56 +144,41 @@ show_rsi_band = st.sidebar.checkbox("RSI状態を背景透過カラー表示", v
 show_history_trades = st.sidebar.checkbox("過去トレード履歴ライン", value=False)
 show_trading_lines = st.sidebar.checkbox("エントリー/TP/SL ライン", value=True)
 
-st.query_params.update({
-    "pair": pair_symbol,
-    "htf": htf_trend,
-    "min_pip": min_pip_target,
-    "stop": stop_pips,
-    "trail_act": trail_activation_pips,
-    "auto": auto_trade,
-    "trail": enable_trail
-})
-
-if st.sidebar.button("💾 現在の設定を保存", use_container_width=True):
-    current_settings = {
-        "pair_symbol": pair_symbol, "htf_trend": htf_trend,
-        "min_pip_target": min_pip_target, "stop_pips": stop_pips,
-        "trail_activation_pips": trail_activation_pips, "auto_trade": auto_trade,
-        "enable_trail": enable_trail
-    }
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump(current_settings, f, indent=4)
-    st.sidebar.success("保存完了")
-
 # ------------------------------------------------------------------------------
-# 2. 為替データ取得（1秒更新用にTTLを1秒に設定）
+# 2. 為替データ取得（エラー対策・連続自動更新対応）
 # ------------------------------------------------------------------------------
-@st.cache_data(ttl=1)
+def generate_simulated_data(symbol):
+    periods = 80
+    base_price = 155.00 if "JPY" in symbol else 1.0850
+    times = [datetime.now() - timedelta(minutes=5 * (periods - i)) for i in range(periods)]
+    step = 0.03 if "JPY" in symbol else 0.0003
+    changes = np.random.normal(step * 0.05, step, periods)
+    prices = base_price + np.cumsum(changes)
+    
+    df = pd.DataFrame({
+        "Datetime": times,
+        "Open": prices - changes / 2,
+        "High": prices + np.abs(np.random.normal(step * 0.5, step * 0.3, periods)),
+        "Low": prices - np.abs(np.random.normal(step * 0.5, step * 0.3, periods)),
+        "Close": prices
+    })
+    return df
+
+@st.cache_data(ttl=2)
 def load_market_data(symbol):
     is_simulated = False
     try:
-        df = yf.download(tickers=symbol, period="5d", interval="5m", progress=False)
+        # yfinanceでのデータ取得（タイムアウト防止のため2秒キャッシュ）
+        df = yf.download(tickers=symbol, period="1d", interval="5m", progress=False, timeout=2)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df = df.reset_index()
         if df.empty or len(df) < 20:
-            raise ValueError()
+            raise ValueError("データ件数不足")
     except Exception:
+        # 取得制限や休日等でエラーが発生した場合は自動でシミュレーションデータを生成して停止を防ぐ
         is_simulated = True
-        periods = 80
-        base_price = 155.00 if "JPY" in symbol else 1.0850
-        times = [datetime.now() - timedelta(minutes=5 * (periods - i)) for i in range(periods)]
-        step = 0.03 if "JPY" in symbol else 0.0003
-        changes = np.random.normal(step * 0.1, step, periods)
-        prices = base_price + np.cumsum(changes)
-        
-        df = pd.DataFrame({
-            "Datetime": times,
-            "Open": prices - changes / 2,
-            "High": prices + np.abs(np.random.normal(step * 0.5, step * 0.3, periods)),
-            "Low": prices - np.abs(np.random.normal(step * 0.5, step * 0.3, periods)),
-            "Close": prices
-        })
+        df = generate_simulated_data(symbol)
     
     df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
 
@@ -241,7 +220,7 @@ if htf_pass and breakout_pass and target_pass:
 st.title("⚡ 水島流 MTF スキャルピング & 自動売買シミュレーター")
 
 if is_simulated_data:
-    st.info("💡 市場休場中または取得制限のため、シミュレーション用チャートを表示しています。")
+    st.info("💡 市場休場中またはAPI制限回避のため、リアルタイム・シミュレーションデータで更新中です。")
 
 k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("通貨ペア", pair_symbol.replace("=X", ""))
@@ -253,7 +232,7 @@ k5.metric("シグナル", signal)
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 5. 視認性極大化チャート描画 (ライトテーマ)
+# 5. チャート描画 (ライトテーマ)
 # ------------------------------------------------------------------------------
 col_chart, col_logic = st.columns([3.2, 1])
 
@@ -282,7 +261,6 @@ with col_chart:
     
     fig = go.Figure()
 
-    # 1. ローソク足（ライトテーマに映える明るい緑・赤）
     fig.add_trace(go.Candlestick(
         x=df[time_col], open=df["Open"], high=df["High"],
         low=df["Low"], close=df["Close"], name="価格",
@@ -290,19 +268,16 @@ with col_chart:
         increasing_fillcolor="#26a69a", decreasing_fillcolor="#ef5350"
     ))
 
-    # 2. 5M EMA(20)
     if show_ema20:
         fig.add_trace(go.Scatter(
             x=df[time_col], y=df["EMA20"],
             line=dict(color="#2962FF", width=2), name="EMA(20)"
         ))
 
-    # 3. 高値・安値レジサポ線
     if show_trendlines:
         fig.add_hline(y=recent_high, line_dash="dash", line_color="#d32f2f", line_width=1.5, annotation_text="直近高値")
         fig.add_hline(y=recent_low, line_dash="dash", line_color="#1976d2", line_width=1.5, annotation_text="直近安値")
 
-    # 4. RSI背景表示
     if show_rsi_band:
         last_rsi = float(df["RSI"].iloc[-1])
         if last_rsi >= 70:
@@ -314,15 +289,7 @@ with col_chart:
                           fillcolor="rgba(38, 166, 154, 0.2)", line_width=0,
                           annotation_text="RSI 売られすぎ", annotation_position="bottom left")
 
-    # 5. 過去トレード履歴
     price_fmt = ".3f" if "JPY" in pair_symbol else ".5f"
-    if show_history_trades:
-        for t in trade_history_data:
-            if ("JPY" in pair_symbol and "JPY" in t["銘柄"]) or ("USD" in pair_symbol and "USD" in t["銘柄"]):
-                fig.add_hline(y=float(t["エントリー価格"]), line_dash="dot", line_color="#0288d1", line_width=1)
-                fig.add_hline(y=float(t["決済価格"]), line_dash="dot", line_color="#2e7d32", line_width=1)
-
-    # 6. 売買ターゲットライン
     if show_trading_lines:
         if signal == "BUY":
             fig.add_hline(y=current_price, line_color="#0288d1", line_width=2, annotation_text=f"BUY ENTRY: {current_price:{price_fmt}}")
@@ -332,11 +299,7 @@ with col_chart:
             fig.add_hline(y=current_price, line_color="#0288d1", line_width=2, annotation_text=f"SELL ENTRY: {current_price:{price_fmt}}")
             fig.add_hline(y=recent_low, line_dash="longdash", line_color="#2e7d32", line_width=1.5, annotation_text="TP (利確)")
             fig.add_hline(y=current_price + stop_pips * pip_value, line_dash="longdash", line_color="#c62828", line_width=1.5, annotation_text="SL (損切)")
-        else:
-            planned = recent_5m_high if "Uptrend" in htf_trend else recent_5m_low
-            fig.add_hline(y=planned, line_dash="dashdot", line_color="#f57f17", line_width=1.5, annotation_text=f"PLANNED ENTRY: {planned:{price_fmt}}")
 
-    # 💡 uirevision=True にすることで1秒リフレッシュ時も表示範囲・ズーム状態を固定
     fig.update_layout(
         height=560,
         xaxis_rangeslider_visible=False,
@@ -344,28 +307,16 @@ with col_chart:
         template="plotly_white",
         paper_bgcolor="#ffffff",
         plot_bgcolor="#ffffff",
-        uirevision=True,  # 連続更新時のズーム位置の固定
-        yaxis=dict(
-            title="Price",
-            side="right",
-            showgrid=True,
-            gridcolor="#e9ecef"
-        ),
-        xaxis=dict(
-            showgrid=True,
-            gridcolor="#e9ecef"
-        )
+        uirevision=True,  # 自動更新時もズーム位置等を固定
+        yaxis=dict(title="Price", side="right", showgrid=True, gridcolor="#e9ecef"),
+        xaxis=dict(showgrid=True, gridcolor="#e9ecef")
     )
 
     st.plotly_chart(
         fig,
         use_container_width=True,
         key="main_fx_chart",
-        config={
-            "responsive": True,
-            "displayModeBar": True,
-            "scrollZoom": True
-        }
+        config={"responsive": True, "displayModeBar": True, "scrollZoom": True}
     )
 
 # ------------------------------------------------------------------------------
